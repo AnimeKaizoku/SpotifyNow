@@ -4,7 +4,10 @@ from uuid import uuid4
 import os, sys, json, sqlite3, logging, requests
 from urllib.parse import quote_plus as linkparse
 from telegram.ext import Updater, CommandHandler, ConversationHandler, MessageHandler, InlineQueryHandler, Filters, run_async
+from telegram.error import Unauthorized, BadRequest
 from telegram import Bot, ParseMode, InlineKeyboardMarkup, InlineKeyboardButton, ChatAction, InlineQueryResultCachedPhoto
+from json.decoder import JSONDecodeError
+
 
 default_pic = requests.get('https://files.catbox.moe/upm7uz.jpg')
 
@@ -106,8 +109,10 @@ def getpic(r, uid, context, podcast=False):
 @run_async
 def nowplaying(update, context):
     'collects user info, requests spotify api for song info and sends the processed image'
-    context.bot.sendChatAction(update.message.chat_id, ChatAction.TYPING)
-    try: 
+    try:
+       context.bot.sendChatAction(update.message.chat_id, ChatAction.TYPING)
+    except Unauthorized as e:
+        print(e)
         uid = update.message.from_user.id
         authtoken = list(sql.get_user(uid)[0])[2]
     except: 
@@ -132,7 +137,10 @@ def nowplaying(update, context):
             'Authorization': 'Bearer '+token['access_token']
         }
         r = requests.get('https://api.spotify.com/v1/me/player/currently-playing', headers=headers)
-        r = r.json()
+        try:
+          r = r.json()
+        except JSONDecodeError as e: 
+            print("JSONDecodeError error") 
         r['token'] = token
         # with open('resp.json', 'w') as f:
         #     json.dump(r, f, indent=4)
@@ -150,7 +158,10 @@ def nowplaying(update, context):
             button = InlineKeyboardButton(text="Play on Spotify", url=r['item']['external_urls']['spotify'])
             context.bot.send_photo(update.message.chat_id, getpic(r, uid, context, podcast=True), reply_markup=InlineKeyboardMarkup([[button]]))
         else: 
-            update.message.reply_text("I'm not sure what you're listening to.")
+            try:
+                update.message.reply_text("I'm not sure what you're listening to.")
+            except BadRequest as e: 
+                 context.bot.send_message(update.effective_chat.id,"I'm not sure what you're listening to.")
     except Exception as e: 
         print(e)
         update.message.reply_text("You're not listening to anything on Spotify at the moment.")
