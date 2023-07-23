@@ -1,9 +1,12 @@
+#!env/scripts/python
 import sql, processor
 from uuid import uuid4
 import os, sys, json, sqlite3, logging, requests
 from urllib.parse import quote_plus as linkparse
 from telegram.ext import Updater, CommandHandler, ConversationHandler, MessageHandler, InlineQueryHandler, Filters, run_async
 from telegram import Bot, ParseMode, InlineKeyboardMarkup, InlineKeyboardButton, ChatAction, InlineQueryResultCachedPhoto
+
+default_pic = requests.get('https://files.catbox.moe/upm7uz.jpg')
 
 def link(update, context):
     'add new user'
@@ -41,7 +44,7 @@ def relink(update, context):
 def unlink(update, context):
     'remove user from db'
     sql.del_user(update.effective_user.id)
-    print(update.message.from_user.username+' just unlinked their account.')
+    print(f'{update.message.from_user.username} just unlinked their account.')
     message = "You've been unlinked from my database. You can disable the authorization from your [Account's Apps Overview](https://www.spotify.com/us/account/apps/) section."
     update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
@@ -79,25 +82,25 @@ def start(update, context):
             update.message.reply_text(f'Something went wrong. Try to /relink your account.')
         else:
             sql.add_token(authtoken, update.effective_user.id)
-            print(update.message.from_user.username+' just linked their account.')
+            print(f'{update.message.from_user.username} just linked their account.')
             message = "Yay! Your Spotify account is now linked. Tap /now anytime to flex what you're listening to. You can also use the inline mode by typing @SpotifyNowBot in any chat."
             update.message.reply_text(message)
     update.effective_message.delete()
 
-def getpic(r, uid, context):
+def getpic(r, uid, context, podcast=False):
     'retrives and passes all arguments to the image processor'
     username  = list(sql.get_user(uid)[0])[1]
     songname  = r['item']['name']
-    albumname = r['item']['album']['name']
+    albumname = r['item']['show']['name'] if podcast else r['item']['album']['name']
     totaltime = r['item']['duration_ms']
     crrnttime = r['progress_ms']
-    coverart  = requests.get(r['item']['album']['images'][1]['url'])
-    artists   = ', '.join([x['name'] for x in r['item']['artists']])
+    coverart  = requests.get(r['item']['images'][1]['url'] if podcast else r['item']['album']['images'][1]['url'])
+    artists   = r['item']['show']['publisher'] if podcast else ', '.join([x['name'] for x in r['item']['artists']])
     try:
         pfp  = context.bot.getUserProfilePhotos(uid, limit=1)['photos'][0][0]['file_id']
         user = requests.get(context.bot.getFile(pfp).file_path)
     except:
-        user = requests.get('https://files.catbox.moe/jp6szj.jpg')
+        user = default_pic
     return(processor.process(username, songname, albumname, artists, crrnttime, totaltime, user, coverart))
 
 @run_async
@@ -128,12 +131,24 @@ def nowplaying(update, context):
             'Content-Type': 'application/json', 
             'Authorization': 'Bearer '+token['access_token']
         }
-        r = requests.get('https://api.spotify.com/v1/me/player/currently-playing', headers=headers).json()
+        r = requests.get('https://api.spotify.com/v1/me/player/currently-playing', headers=headers)
+        r = r.json()
+        r['token'] = token
+        # with open('resp.json', 'w') as f:
+        #     json.dump(r, f, indent=4)
+        if r.get('error'):
+            update.message.reply_text("Spotify API: "+r['error'].get('message'))
+            print(r['error'].get('message'))
+            return
         if   r['currently_playing_type'] == 'ad': 
             update.message.reply_text("Ads. You're listening to those annoying ads.")
         elif r['currently_playing_type'] == 'track':
             button = InlineKeyboardButton(text="Play on Spotify", url=r['item']['external_urls']['spotify'])
             context.bot.send_photo(update.message.chat_id, getpic(r, uid, context), reply_markup=InlineKeyboardMarkup([[button]]))
+        elif r['currently_playing_type'] == 'episode':
+            r = requests.get('https://api.spotify.com/v1/me/player/currently-playing?additional_types=episode', headers=headers).json()
+            button = InlineKeyboardButton(text="Play on Spotify", url=r['item']['external_urls']['spotify'])
+            context.bot.send_photo(update.message.chat_id, getpic(r, uid, context, podcast=True), reply_markup=InlineKeyboardMarkup([[button]]))
         else: 
             update.message.reply_text("I'm not sure what you're listening to.")
     except Exception as e: 
@@ -192,11 +207,29 @@ def inlinenow(update, context):
             'Authorization':'Bearer '+token['access_token']
         }
         r = requests.get('https://api.spotify.com/v1/me/player/currently-playing', headers=headers).json()
+        if r.get('error'):
+            update.inline_query.answer([], switch_pm_text="Spotify API: "+r['error'].get('message'), switch_pm_parameter='notsure', cache_time=0)
         if   r['currently_playing_type'] == 'ad': 
             update.inline_query.answer([], switch_pm_text="You're listening to annoying ads.", switch_pm_parameter='ads', cache_time=0)
         elif r['currently_playing_type'] == 'track':
             button = InlineKeyboardButton(text="Play on Spotify", url=r['item']['external_urls']['spotify'])
             image   = getpic(r, uid, context)
+            dump    = context.bot.send_photo(dumpchannel, photo=image)
+            photo   = dump['photo'][1]['file_id']
+            dump.delete()
+            update.inline_query.answer(
+                [
+                    InlineQueryResultCachedPhoto(
+                        id=uuid4(),
+                        photo_file_id=photo,
+                        reply_markup=InlineKeyboardMarkup([[button]])
+                    )
+                ], cache_time=0
+            )
+        elif r['currently_playing_type'] == 'episode':
+            r = requests.get('https://api.spotify.com/v1/me/player/currently-playing?additional_types=episode', headers=headers).json()
+            button = InlineKeyboardButton(text="Play on Spotify", url=r['item']['external_urls']['spotify'])
+            image   = getpic(r, uid, context, podcast=True)
             dump    = context.bot.send_photo(dumpchannel, photo=image)
             photo   = dump['photo'][1]['file_id']
             dump.delete()

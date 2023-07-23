@@ -1,6 +1,3 @@
-*.db
-config.json
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -8,6 +5,13 @@ __pycache__/
 
 # C extensions
 *.so
+
+spotifynow.db
+config.json
+config.json.bak
+.vscode
+env
+
 
 # Distribution / packaging
 .Python
